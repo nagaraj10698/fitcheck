@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, WardrobeItem, Transaction } from './types';
+import { User, WardrobeItem, Transaction, SavedOutfit } from './types';
 import { defaultWardrobe } from './wardrobe';
 
 interface UserContextType {
@@ -27,6 +27,8 @@ interface UserContextType {
   addGlobalGarment: (item: WardrobeItem) => void;
   removeGlobalGarment: (itemId: string) => void;
   redeemReferral: (code: string) => { success: boolean; message: string };
+  saveOutfit: (outfit: SavedOutfit) => void;
+  deleteSavedOutfit: (outfitId: string) => void;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -68,11 +70,21 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
                  referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
                  redeemedReferral: false
              };
-             // Update in DB
+        }
+        // Backfill savedOutfits
+        if (!foundUser.savedOutfits) {
+            foundUser = {
+                ...foundUser,
+                savedOutfits: []
+            };
+        }
+        // Update in DB if we modified it
+        if (JSON.stringify(foundUser) !== JSON.stringify(usersDB.find(u => u.email === storedUserEmail))) {
              const updatedDB = usersDB.map(u => u.id === foundUser!.id ? foundUser! : u);
              setAllUsers(updatedDB);
              localStorage.setItem('saas_users_db', JSON.stringify(updatedDB));
         }
+
         setUser(foundUser);
       } else {
         logout();
@@ -124,7 +136,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 gems: 50, // Starter gems
                 referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
                 redeemedReferral: false,
-                avatarUrl: options.avatarUrl
+                avatarUrl: options.avatarUrl,
+                savedOutfits: []
             };
             usersDB.push(existingUser);
             saveUsersDB(usersDB);
@@ -153,12 +166,21 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     // Legacy backfill if needed
+    let modified = false;
     if (existingUser && !existingUser.referralCode) {
         existingUser = {
             ...existingUser,
             referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
             redeemedReferral: false
         };
+        modified = true;
+    }
+    if (existingUser && !existingUser.savedOutfits) {
+        existingUser = { ...existingUser, savedOutfits: [] };
+        modified = true;
+    }
+
+    if (modified) {
         const updatedDB = usersDB.map(u => u.id === existingUser!.id ? existingUser! : u);
         saveUsersDB(updatedDB);
     }
@@ -203,6 +225,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
           gems: startGems,
           referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
           redeemedReferral: redeemed,
+          savedOutfits: []
       };
 
       usersDB.push(newUser);
@@ -306,6 +329,27 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { success: true, message: `Success! You earned ${USER_BONUS} Gems and your friend got ${REFERRER_BONUS} Gems.` };
   };
 
+  // --- Saved Outfit Functionality ---
+  const saveOutfit = (outfit: SavedOutfit) => {
+      if (!user) return;
+      const saved = user.savedOutfits || [];
+      const updatedUser = { ...user, savedOutfits: [outfit, ...saved] };
+      
+      setUser(updatedUser);
+      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
+      saveUsersDB(updatedDB);
+  };
+
+  const deleteSavedOutfit = (outfitId: string) => {
+      if (!user || !user.savedOutfits) return;
+      const updatedOutfits = user.savedOutfits.filter(o => o.id !== outfitId);
+      const updatedUser = { ...user, savedOutfits: updatedOutfits };
+
+      setUser(updatedUser);
+      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
+      saveUsersDB(updatedDB);
+  };
+
   // --- Admin Functions ---
 
   const createUser = (userData: Omit<User, 'id'>) => {
@@ -317,7 +361,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         ...userData,
         id: `user-${Date.now()}`,
         referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-        redeemedReferral: false
+        redeemedReferral: false,
+        savedOutfits: []
     };
     usersDB.push(newUser);
     saveUsersDB(usersDB);
@@ -416,7 +461,9 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         adminAdjustGems,
         addGlobalGarment,
         removeGlobalGarment,
-        redeemReferral
+        redeemReferral,
+        saveOutfit,
+        deleteSavedOutfit
     }}>
       {children}
     </UserContext.Provider>

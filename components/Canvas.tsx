@@ -1,9 +1,10 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
 import React, { useState } from 'react';
-import { RotateCcwIcon, ChevronLeftIcon, ChevronRightIcon } from './icons';
+import { RotateCcwIcon, ChevronLeftIcon, ChevronRightIcon, HeartIcon } from './icons';
 import Spinner from './Spinner';
 import { AnimatePresence, motion } from 'framer-motion';
 
@@ -16,11 +17,13 @@ interface CanvasProps {
   poseInstructions: string[];
   currentPoseIndex: number;
   availablePoseKeys: string[];
+  onSave?: () => void;
 }
 
-const Canvas: React.FC<CanvasProps> = ({ displayImageUrl, onStartOver, isLoading, loadingMessage, onSelectPose, poseInstructions, currentPoseIndex, availablePoseKeys }) => {
+const Canvas: React.FC<CanvasProps> = ({ displayImageUrl, onStartOver, isLoading, loadingMessage, onSelectPose, poseInstructions, currentPoseIndex, availablePoseKeys, onSave }) => {
   const [isPoseMenuOpen, setIsPoseMenuOpen] = useState(false);
-  
+  const [savedEffect, setSavedEffect] = useState(false);
+
   const handlePreviousPose = () => {
     if (isLoading || availablePoseKeys.length <= 1) return;
 
@@ -69,6 +72,14 @@ const Canvas: React.FC<CanvasProps> = ({ displayImageUrl, onStartOver, isLoading
     }
   };
   
+  const handleSaveClick = () => {
+      if (onSave) {
+          onSave();
+          setSavedEffect(true);
+          setTimeout(() => setSavedEffect(false), 1500);
+      }
+  };
+  
   return (
     <div className="w-full h-full flex items-center justify-center p-4 relative animate-zoom-in group">
       {/* Start Over Button */}
@@ -79,6 +90,18 @@ const Canvas: React.FC<CanvasProps> = ({ displayImageUrl, onStartOver, isLoading
           <RotateCcwIcon className="w-4 h-4 mr-2" />
           Start Over
       </button>
+
+      {/* Save Button */}
+      {displayImageUrl && !isLoading && (
+         <button
+            onClick={handleSaveClick}
+            className={`absolute top-4 right-4 z-30 flex items-center justify-center p-3 rounded-full transition-all duration-200 ease-in-out shadow-sm backdrop-blur-sm active:scale-95 ${savedEffect ? 'bg-red-50 border border-red-200 text-red-600' : 'bg-white/60 border border-gray-300/80 text-gray-700 hover:bg-white hover:border-gray-400'}`}
+            title="Save to Favorites"
+         >
+             <HeartIcon className={`w-5 h-5 ${savedEffect ? 'fill-current' : ''}`} />
+             {savedEffect && <span className="ml-2 text-xs font-bold">Saved!</span>}
+         </button>
+      )}
 
       {/* Image Display or Placeholder */}
       <div className="relative w-full h-full flex items-center justify-center">

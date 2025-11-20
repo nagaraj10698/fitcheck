@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -49,7 +50,7 @@ const useMediaQuery = (query: string): boolean => {
 };
 
 const MainApp: React.FC = () => {
-  const { user, gems, deductGems, globalWardrobe } = useUser();
+  const { user, gems, deductGems, globalWardrobe, saveOutfit } = useUser();
   const [modelImageUrl, setModelImageUrl] = useState<string | null>(null);
   const [outfitHistory, setOutfitHistory] = useState<OutfitLayer[]>([]);
   const [currentOutfitIndex, setCurrentOutfitIndex] = useState(0);
@@ -232,6 +233,26 @@ const MainApp: React.FC = () => {
     }
   }, [currentPoseIndex, outfitHistory, isLoading, currentOutfitIndex, user, gems]);
 
+  const handleSaveLook = () => {
+      if (!user) {
+          setIsAuthOpen(true);
+          return;
+      }
+      if (!displayImageUrl) return;
+
+      // Collect garment names
+      const itemNames = activeOutfitLayers
+          .map(layer => layer.garment?.name)
+          .filter((name): name is string => !!name);
+
+      saveOutfit({
+          id: `look-${Date.now()}`,
+          imageUrl: displayImageUrl,
+          timestamp: Date.now(),
+          itemNames
+      });
+  };
+
   const viewVariants = {
     initial: { opacity: 0, y: 15 },
     animate: { opacity: 1, y: 0 },
@@ -293,6 +314,7 @@ const MainApp: React.FC = () => {
                   poseInstructions={POSE_INSTRUCTIONS}
                   currentPoseIndex={currentPoseIndex}
                   availablePoseKeys={availablePoseKeys}
+                  onSave={handleSaveLook}
                 />
               </div>
 

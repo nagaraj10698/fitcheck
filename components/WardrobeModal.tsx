@@ -5,8 +5,9 @@
 */
 import React, { useState } from 'react';
 import type { WardrobeItem } from '../types';
-import { UploadCloudIcon, CheckCircleIcon, LinkIcon, GlobeIcon, LayoutGridIcon } from './icons';
+import { UploadCloudIcon, CheckCircleIcon, LinkIcon, GlobeIcon, LayoutGridIcon, HeartIcon, Trash2Icon } from './icons';
 import Spinner from './Spinner';
+import { useUser } from '../UserContext';
 
 interface WardrobePanelProps {
   onGarmentSelect: (garmentFile: File, garmentInfo: WardrobeItem) => void;
@@ -102,7 +103,8 @@ const ensureSupportedImage = async (blob: Blob, filename: string): Promise<File>
 };
 
 const WardrobePanel: React.FC<WardrobePanelProps> = ({ onGarmentSelect, activeGarmentIds, isLoading, wardrobe }) => {
-    const [activeTab, setActiveTab] = useState<'wardrobe' | 'link'>('wardrobe');
+    const { user, deleteSavedOutfit } = useUser();
+    const [activeTab, setActiveTab] = useState<'wardrobe' | 'link' | 'looks'>('wardrobe');
     const [error, setError] = useState<string | null>(null);
     const [urlInput, setUrlInput] = useState('');
     const [isUrlLoading, setIsUrlLoading] = useState(false);
@@ -318,7 +320,7 @@ const WardrobePanel: React.FC<WardrobePanelProps> = ({ onGarmentSelect, activeGa
         <div className="flex p-1 bg-gray-100 rounded-lg mb-6">
             <button
                 onClick={() => setActiveTab('wardrobe')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
+                className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-md transition-all duration-200 ${
                     activeTab === 'wardrobe' 
                     ? 'bg-white shadow-sm text-gray-900' 
                     : 'text-gray-500 hover:text-gray-700'
@@ -329,7 +331,7 @@ const WardrobePanel: React.FC<WardrobePanelProps> = ({ onGarmentSelect, activeGa
             </button>
             <button
                 onClick={() => setActiveTab('link')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
+                className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-md transition-all duration-200 ${
                     activeTab === 'link' 
                     ? 'bg-white shadow-sm text-gray-900' 
                     : 'text-gray-500 hover:text-gray-700'
@@ -337,6 +339,17 @@ const WardrobePanel: React.FC<WardrobePanelProps> = ({ onGarmentSelect, activeGa
             >
                 <GlobeIcon className="w-4 h-4" />
                 Web Link
+            </button>
+            <button
+                onClick={() => setActiveTab('looks')}
+                className={`flex-1 flex items-center justify-center gap-2 py-2 text-xs font-medium rounded-md transition-all duration-200 ${
+                    activeTab === 'looks' 
+                    ? 'bg-white shadow-sm text-gray-900' 
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+            >
+                <HeartIcon className="w-4 h-4" />
+                Looks
             </button>
         </div>
 
@@ -388,6 +401,41 @@ const WardrobePanel: React.FC<WardrobePanelProps> = ({ onGarmentSelect, activeGa
                         ) : 'Add Item'}
                     </button>
                 </form>
+            </div>
+        ) : activeTab === 'looks' ? (
+            <div className="flex-grow animate-fade-in">
+                <h2 className="text-xl font-serif tracking-wider text-gray-800 mb-4">Saved Looks</h2>
+                {!user ? (
+                     <div className="text-center py-8 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                         <HeartIcon className="w-10 h-10 text-gray-300 mx-auto mb-2" />
+                         <p className="text-gray-500 text-sm">Sign in to save your favorite outfits.</p>
+                     </div>
+                ) : (user.savedOutfits && user.savedOutfits.length > 0) ? (
+                    <div className="grid grid-cols-2 gap-3">
+                        {user.savedOutfits.map((outfit) => (
+                            <div key={outfit.id} className="relative group rounded-lg overflow-hidden bg-gray-100 border border-gray-200 shadow-sm">
+                                <img src={outfit.imageUrl} alt="Saved Outfit" className="w-full h-auto object-cover" />
+                                <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-2">
+                                     <p className="text-white text-[10px] mb-1 truncate">{new Date(outfit.timestamp).toLocaleDateString()}</p>
+                                     <div className="flex justify-end">
+                                         <button 
+                                            onClick={() => deleteSavedOutfit(outfit.id)}
+                                            className="p-1.5 bg-white/20 hover:bg-red-500 text-white rounded-full transition-colors backdrop-blur-md"
+                                            title="Delete Look"
+                                         >
+                                             <Trash2Icon className="w-4 h-4" />
+                                         </button>
+                                     </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-300">
+                        <p className="text-gray-500 text-sm mb-2">No saved looks yet.</p>
+                        <p className="text-gray-400 text-xs">Click the heart icon on your styled image to save it here.</p>
+                    </div>
+                )}
             </div>
         ) : (
             <div className="flex-grow animate-fade-in">

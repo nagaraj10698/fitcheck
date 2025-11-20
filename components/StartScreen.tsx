@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -10,6 +11,12 @@ import { Compare } from './ui/compare';
 import { generateModelImage } from '../services/geminiService';
 import Spinner from './Spinner';
 import { getFriendlyErrorMessage } from '../lib/utils';
+
+// Default images for the landing page comparison
+// Using a reliable Unsplash URL to ensure the image loads correctly.
+// To use your custom image, ensure 'hero.jpg' is in the public/ folder and change this back to "/hero.jpg"
+const DEFAULT_USER_IMAGE = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=800&q=80";
+const DEFAULT_MODEL_IMAGE = "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=800&q=80";
 
 interface StartScreenProps {
   onModelFinalized: (modelUrl: string) => void;
@@ -101,8 +108,8 @@ const StartScreen: React.FC<StartScreenProps> = ({ onModelFinalized }) => {
           </div>
           <div className="w-full lg:w-1/2 flex flex-col items-center justify-center">
             <Compare
-              firstImage="https://storage.googleapis.com/gemini-95-icons/asr-tryon.jpg"
-              secondImage="https://storage.googleapis.com/gemini-95-icons/asr-tryon-model.png"
+              firstImage={DEFAULT_USER_IMAGE}
+              secondImage={DEFAULT_MODEL_IMAGE}
               slideMode="drag"
               className="w-full max-w-sm aspect-[2/3] rounded-2xl bg-gray-200"
             />

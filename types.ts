@@ -15,6 +15,13 @@ export interface OutfitLayer {
   poseImages: Record<string, string>; // Maps pose instruction to image URL
 }
 
+export interface SavedOutfit {
+  id: string;
+  imageUrl: string;
+  timestamp: number;
+  itemNames: string[];
+}
+
 export interface User {
   id: string;
   name: string;
@@ -25,6 +32,7 @@ export interface User {
   redeemedReferral?: boolean;
   avatarUrl?: string;
   password?: string; // For local mock auth only
+  savedOutfits?: SavedOutfit[];
 }
 
 export interface Transaction {
