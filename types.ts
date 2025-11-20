@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -20,6 +21,10 @@ export interface User {
   email: string;
   role: 'user' | 'admin';
   gems: number;
+  referralCode?: string;
+  redeemedReferral?: boolean;
+  avatarUrl?: string;
+  password?: string; // For local mock auth only
 }
 
 export interface Transaction {

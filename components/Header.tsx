@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -61,8 +62,12 @@ const Header: React.FC<HeaderProps> = ({ onOpenAuth, onOpenPricing, onOpenAdmin 
                             <p className="text-sm font-bold text-gray-900">{user.name}</p>
                         </div>
                         <div className="relative group">
-                            <button className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center text-gray-600 hover:bg-gray-300 transition-colors">
-                                <UserIcon className="w-5 h-5" />
+                            <button className="w-9 h-9 bg-gray-200 rounded-full flex items-center justify-center text-gray-600 hover:bg-gray-300 transition-colors overflow-hidden border border-gray-200">
+                                {user.avatarUrl ? (
+                                    <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
+                                ) : (
+                                    <UserIcon className="w-5 h-5" />
+                                )}
                             </button>
                             {/* Dropdown Menu */}
                             <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all transform origin-top-right">
@@ -73,7 +78,7 @@ const Header: React.FC<HeaderProps> = ({ onOpenAuth, onOpenPricing, onOpenAdmin 
                                     onClick={onOpenPricing}
                                     className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
                                 >
-                                    <CreditCardIcon className="w-4 h-4" /> Recharge Wallet
+                                    <CreditCardIcon className="w-4 h-4" /> Earn Gems
                                 </button>
                                 <button 
                                     onClick={logout}
@@ -87,12 +92,6 @@ const Header: React.FC<HeaderProps> = ({ onOpenAuth, onOpenPricing, onOpenAdmin 
                 </>
             ) : (
                 <div className="flex items-center gap-3">
-                    <button 
-                        onClick={onOpenPricing}
-                        className="text-sm font-medium text-gray-600 hover:text-gray-900 hidden sm:block"
-                    >
-                        Pricing
-                    </button>
                     <button 
                         onClick={onOpenAuth}
                         className="px-5 py-2 bg-gray-900 text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors shadow-sm"

@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -10,7 +11,8 @@ interface UserContextType {
   user: User | null;
   gems: number;
   globalWardrobe: WardrobeItem[];
-  login: (email: string) => void;
+  login: (email: string, password?: string, options?: { name?: string, avatarUrl?: string, isGoogle?: boolean }) => Promise<void>;
+  signup: (email: string, password: string, name: string, referralCode?: string) => Promise<void>;
   logout: () => void;
   deductGems: (amount: number, description?: string) => boolean;
   purchaseGems: (amount: number) => void;
@@ -24,6 +26,7 @@ interface UserContextType {
   adminAdjustGems: (userId: string, adjustment: number, description: string) => void;
   addGlobalGarment: (item: WardrobeItem) => void;
   removeGlobalGarment: (itemId: string) => void;
+  redeemReferral: (code: string) => { success: boolean; message: string };
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -56,8 +59,20 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Restore current session
     const storedUserEmail = localStorage.getItem('saas_current_user_email');
     if (storedUserEmail) {
-      const foundUser = usersDB.find(u => u.email === storedUserEmail);
+      let foundUser = usersDB.find(u => u.email === storedUserEmail);
       if (foundUser) {
+        // Backfill referral code if missing for legacy users
+        if (!foundUser.referralCode) {
+             foundUser = {
+                 ...foundUser,
+                 referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+                 redeemedReferral: false
+             };
+             // Update in DB
+             const updatedDB = usersDB.map(u => u.id === foundUser!.id ? foundUser! : u);
+             setAllUsers(updatedDB);
+             localStorage.setItem('saas_users_db', JSON.stringify(updatedDB));
+        }
         setUser(foundUser);
       } else {
         logout();
@@ -93,28 +108,117 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
   };
 
-  const login = (email: string) => {
+  const login = async (email: string, password?: string, options?: { name?: string, avatarUrl?: string, isGoogle?: boolean }) => {
     const usersDB = [...allUsers];
-    let existingUser = usersDB.find(u => u.email === email);
+    let existingUser = usersDB.find(u => u.email.toLowerCase() === email.toLowerCase());
 
-    if (!existingUser) {
-      // Determine role based on email
-      const role = email.toLowerCase() === 'admin@fitcheck.com' ? 'admin' : 'user';
-      
-      existingUser = { 
-        id: `user-${Date.now()}`, 
-        name: email.split('@')[0], 
-        email, 
-        role, 
-        gems: 50 // Starter gems
-      };
-      usersDB.push(existingUser);
-      saveUsersDB(usersDB);
-      logTransaction(existingUser, 'credit', 50, 'Welcome Bonus');
+    // Google Sign In Flow (Auto-create if missing, no password check)
+    if (options?.isGoogle) {
+        if (!existingUser) {
+            const role = email.toLowerCase() === 'admin@fitcheck.com' ? 'admin' : 'user';
+            existingUser = { 
+                id: `user-${Date.now()}`, 
+                name: options.name || email.split('@')[0], 
+                email, 
+                role, 
+                gems: 50, // Starter gems
+                referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+                redeemedReferral: false,
+                avatarUrl: options.avatarUrl
+            };
+            usersDB.push(existingUser);
+            saveUsersDB(usersDB);
+            logTransaction(existingUser, 'credit', 50, 'Welcome Bonus');
+        } else {
+             // Update Google Profile info
+             if (options.avatarUrl && !existingUser.avatarUrl) {
+                existingUser = { ...existingUser, avatarUrl: options.avatarUrl };
+                if (options.name) existingUser.name = options.name;
+                const updatedDB = usersDB.map(u => u.id === existingUser!.id ? existingUser! : u);
+                saveUsersDB(updatedDB);
+            }
+        }
+    } else {
+        // Email/Password Flow
+        if (!existingUser) {
+            throw new Error('Account not found. Please sign up.');
+        }
+        if (existingUser.password && existingUser.password !== password) {
+            throw new Error('Invalid password.');
+        }
     }
 
-    setUser(existingUser);
-    localStorage.setItem('saas_current_user_email', existingUser.email);
+    // Legacy backfill if needed
+    if (existingUser && !existingUser.referralCode) {
+        existingUser = {
+            ...existingUser,
+            referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+            redeemedReferral: false
+        };
+        const updatedDB = usersDB.map(u => u.id === existingUser!.id ? existingUser! : u);
+        saveUsersDB(updatedDB);
+    }
+
+    if (existingUser) {
+        setUser(existingUser);
+        localStorage.setItem('saas_current_user_email', existingUser.email);
+    }
+  };
+
+  const signup = async (email: string, password: string, name: string, referralCode?: string) => {
+      const usersDB = [...allUsers];
+      if (usersDB.some(u => u.email.toLowerCase() === email.toLowerCase())) {
+          throw new Error('User with this email already exists.');
+      }
+
+      // Handle Referral
+      let referrer: User | undefined;
+      let startGems = 50; // Standard Welcome Bonus
+      let redeemed = false;
+
+      if (referralCode && referralCode.trim()) {
+          const normalizedCode = referralCode.trim().toUpperCase();
+          referrer = usersDB.find(u => u.referralCode === normalizedCode);
+          if (referrer) {
+              // Valid referral: New user gets marked as redeemed, Referrer gets 25 gems later in function
+              redeemed = true;
+          }
+      }
+
+      const role = email.toLowerCase() === 'admin@fitcheck.com' ? 'admin' : 'user';
+      const newUser: User = {
+          id: `user-${Date.now()}`,
+          name: name || email.split('@')[0],
+          email,
+          password, // Store password
+          role,
+          gems: startGems,
+          referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+          redeemedReferral: redeemed,
+      };
+
+      usersDB.push(newUser);
+
+      // Credit Referrer if exists
+      if (referrer) {
+          const REFERRER_BONUS = 25;
+          const updatedReferrer = { ...referrer, gems: referrer.gems + REFERRER_BONUS };
+          // Update referrer in DB array
+          const refIndex = usersDB.findIndex(u => u.id === referrer!.id);
+          if (refIndex !== -1) {
+              usersDB[refIndex] = updatedReferrer;
+          }
+          // Defer logging transaction until after save to keep it clean
+          setTimeout(() => {
+              logTransaction(updatedReferrer, 'credit', REFERRER_BONUS, `Referral Bonus (Invited ${newUser.name})`);
+          }, 0);
+      }
+
+      saveUsersDB(usersDB);
+      logTransaction(newUser, 'credit', startGems, 'Welcome Bonus');
+      
+      setUser(newUser);
+      localStorage.setItem('saas_current_user_email', newUser.email);
   };
 
   const logout = () => {
@@ -151,6 +255,45 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     logTransaction(user, 'credit', amount, 'Wallet Top-up');
   };
 
+  // --- Referral Functionality ---
+  const redeemReferral = (code: string): { success: boolean; message: string } => {
+    if (!user) return { success: false, message: 'Please sign in to redeem codes.' };
+    if (user.redeemedReferral) return { success: false, message: 'You have already redeemed a referral code.' };
+    
+    const normalizedCode = code.trim().toUpperCase();
+    if (user.referralCode === normalizedCode) return { success: false, message: 'You cannot use your own referral code.' };
+
+    const referrer = allUsers.find(u => u.referralCode === normalizedCode);
+    if (!referrer) return { success: false, message: 'Invalid referral code.' };
+
+    const REFERRER_BONUS = 25;
+    const USER_BONUS = 50; // Post-signup redemption might still give 50 to user if we want, or 25? Stick to 50 for user to be nice.
+    
+    // Update both users in DB
+    const updatedUsers = allUsers.map(u => {
+        if (u.id === referrer.id) {
+            return { ...u, gems: u.gems + REFERRER_BONUS };
+        }
+        if (u.id === user.id) {
+            return { ...u, gems: u.gems + USER_BONUS, redeemedReferral: true };
+        }
+        return u;
+    });
+
+    setAllUsers(updatedUsers);
+    saveUsersDB(updatedUsers);
+
+    // Update current user state
+    const updatedCurrentUser = updatedUsers.find(u => u.id === user.id);
+    if (updatedCurrentUser) setUser(updatedCurrentUser);
+
+    // Log transactions
+    logTransaction(referrer, 'credit', REFERRER_BONUS, `Referral Bonus (Invited ${user.name})`);
+    logTransaction(updatedCurrentUser!, 'credit', USER_BONUS, `Referral Bonus (Used code ${normalizedCode})`);
+
+    return { success: true, message: `Success! You earned ${USER_BONUS} Gems and your friend got ${REFERRER_BONUS} Gems.` };
+  };
+
   // --- Admin Functions ---
 
   const createUser = (userData: Omit<User, 'id'>) => {
@@ -160,7 +303,9 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     const newUser: User = {
         ...userData,
-        id: `user-${Date.now()}`
+        id: `user-${Date.now()}`,
+        referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+        redeemedReferral: false
     };
     usersDB.push(newUser);
     saveUsersDB(usersDB);
@@ -245,7 +390,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user, 
         gems: user?.gems || 0, 
         globalWardrobe,
-        login, 
+        login,
+        signup,
         logout, 
         deductGems, 
         purchaseGems,
@@ -257,7 +403,8 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserGems,
         adminAdjustGems,
         addGlobalGarment,
-        removeGlobalGarment
+        removeGlobalGarment,
+        redeemReferral
     }}>
       {children}
     </UserContext.Provider>
