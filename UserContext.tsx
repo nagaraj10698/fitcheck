@@ -143,7 +143,11 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!existingUser) {
             throw new Error('Account not found. Please sign up.');
         }
-        if (existingUser.password && existingUser.password !== password) {
+        // Prevent logging in with email/password if account was created via Google (no password set)
+        if (!existingUser.password) {
+             throw new Error('This account uses Google Sign In. Please sign in with Google.');
+        }
+        if (existingUser.password !== password) {
             throw new Error('Invalid password.');
         }
     }
@@ -174,14 +178,18 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Handle Referral
       let referrer: User | undefined;
       let startGems = 50; // Standard Welcome Bonus
+      const REFERRER_BONUS = 25;
+      const NEW_USER_REFERRAL_BONUS = 50;
       let redeemed = false;
 
+      // Validate and process referral code
       if (referralCode && referralCode.trim()) {
           const normalizedCode = referralCode.trim().toUpperCase();
           referrer = usersDB.find(u => u.referralCode === normalizedCode);
           if (referrer) {
-              // Valid referral: New user gets marked as redeemed, Referrer gets 25 gems later in function
               redeemed = true;
+              // Add the referral bonus to the start gems for the new user
+              startGems += NEW_USER_REFERRAL_BONUS;
           }
       }
 
@@ -201,7 +209,6 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       // Credit Referrer if exists
       if (referrer) {
-          const REFERRER_BONUS = 25;
           const updatedReferrer = { ...referrer, gems: referrer.gems + REFERRER_BONUS };
           // Update referrer in DB array
           const refIndex = usersDB.findIndex(u => u.id === referrer!.id);
@@ -215,7 +222,12 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       saveUsersDB(usersDB);
-      logTransaction(newUser, 'credit', startGems, 'Welcome Bonus');
+      
+      // Log transactions for new user
+      logTransaction(newUser, 'credit', 50, 'Welcome Bonus');
+      if (redeemed) {
+         logTransaction(newUser, 'credit', NEW_USER_REFERRAL_BONUS, 'Referral Bonus (Redeemed Code)');
+      }
       
       setUser(newUser);
       localStorage.setItem('saas_current_user_email', newUser.email);
@@ -267,7 +279,7 @@ export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!referrer) return { success: false, message: 'Invalid referral code.' };
 
     const REFERRER_BONUS = 25;
-    const USER_BONUS = 50; // Post-signup redemption might still give 50 to user if we want, or 25? Stick to 50 for user to be nice.
+    const USER_BONUS = 50; 
     
     // Update both users in DB
     const updatedUsers = allUsers.map(u => {

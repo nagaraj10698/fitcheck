@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -83,7 +84,7 @@ const PricingModal: React.FC<PricingModalProps> = ({ isOpen, onClose }) => {
                                 <h3 className="font-serif font-bold text-gray-900 text-lg">Invite & Earn</h3>
                             </div>
                             <p className="text-sm text-gray-600 mb-6 max-w-sm mx-auto">
-                                Share your unique code. You and your friend both get <span className="font-bold text-purple-700">50 Gems</span> when they redeem it.
+                                Share your unique code. You get <span className="font-bold text-purple-700">25 Gems</span>, and your friend gets <span className="font-bold text-purple-700">50 Gems</span> when they sign up or redeem it.
                             </p>
                             
                             <div className="flex items-center gap-2 max-w-sm mx-auto">
