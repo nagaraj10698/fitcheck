@@ -30,7 +30,7 @@ export interface User {
   gems: number;
   referralCode?: string;
   redeemedReferral?: boolean;
-  avatarUrl?: string;
+  avatarUrl?: string | null; // Changed to allow null for Firestore compatibility
   password?: string; // For local mock auth only
   savedOutfits?: SavedOutfit[];
 }

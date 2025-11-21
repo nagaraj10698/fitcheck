@@ -3,9 +3,9 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
 */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { XIcon, ShirtIcon, GoogleIcon } from './icons';
+import { XIcon, ShirtIcon, GoogleIcon, CopyIcon } from './icons';
 import { useUser } from '../UserContext';
 
 interface AuthModalProps {
@@ -24,6 +24,20 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [error, setError] = useState<string | null>(null);
   
   const { login, signup } = useUser();
+  const [currentDomain, setCurrentDomain] = useState('');
+
+  useEffect(() => {
+      // Get the hostname (e.g. "abc.com") without protocol or path
+      // We avoid fallbacks to hardcoded values to prevent user confusion.
+      let domain = window.location.hostname;
+      
+      // If hostname is empty, try host
+      if (!domain) {
+          domain = window.location.host;
+      }
+
+      setCurrentDomain(domain || "fitcheck-21ffc.web.app");
+  }, []);
 
   const resetForm = () => {
       setEmail('');
@@ -38,15 +52,37 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
       resetForm();
   };
 
+  const getFriendlyAuthError = (errorMessage: string) => {
+      const msg = errorMessage.toLowerCase();
+      const actualDomain = window.location.hostname || window.location.host || 'this domain';
+      
+      if (msg.includes('auth/unauthorized-domain')) {
+          return `Domain Not Authorized: ${actualDomain}
+          
+          You must whitelist this exact domain in Firebase Console to use Google Sign-In.
+          
+          1. Copy the domain shown below or at the bottom of this modal.
+          2. Go to Firebase Console > Authentication > Settings > Authorized Domains
+          3. Click "Add Domain" and paste it (do NOT include https://).`;
+      }
+
+      if (msg.includes('auth/popup-closed-by-user')) return "Sign-in cancelled.";
+      if (msg.includes('auth/email-already-in-use')) return "Email already registered. Try signing in.";
+      if (msg.includes('auth/weak-password')) return "Password is too weak (min 6 chars).";
+      if (msg.includes('auth/invalid-credential') || msg.includes('wrong-password')) return "Incorrect email or password.";
+      if (msg.includes('auth/user-not-found')) return "Account not found. Please sign up.";
+      if (msg.includes('auth/network-request-failed')) return "Network error. Check your connection.";
+      
+      // Fallback cleanup
+      return errorMessage.replace('Firebase: ', '').replace('auth/', '').replace(/-/g, ' ');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
     setError(null);
 
     try {
-        // Simulate network delay
-        await new Promise(resolve => setTimeout(resolve, 600));
-
         if (isSignUp) {
             await signup(email, password, name, referralCode);
         } else {
@@ -54,12 +90,9 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         }
         onClose();
         resetForm();
-    } catch (err) {
-        if (err instanceof Error) {
-            setError(err.message);
-        } else {
-            setError('Authentication failed');
-        }
+    } catch (err: any) {
+        const rawMsg = err.message || err.code || 'Authentication failed';
+        setError(getFriendlyAuthError(rawMsg));
     } finally {
         setIsLoading(false);
     }
@@ -69,19 +102,21 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     setIsLoading(true);
     setError(null);
     try {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        // Simulated Google Login Data - No password needed for Google
-        await login('demo.user@gmail.com', undefined, { 
-            name: 'Demo User', 
-            avatarUrl: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=facearea&facepad=2&w=256&h=256&q=80',
-            isGoogle: true
-        });
+        // We pass empty string for email as it's ignored for Google Auth path in UserContext
+        await login('', undefined, { isGoogle: true });
         onClose();
-    } catch (err) {
-        setError('Google sign-in failed');
+    } catch (err: any) {
+        console.error("Google Sign In Error:", err);
+        const rawMsg = err.code || err.message || 'Google sign-in failed';
+        setError(getFriendlyAuthError(rawMsg));
     } finally {
         setIsLoading(false);
     }
+  };
+
+  const handleCopyDomain = () => {
+      navigator.clipboard.writeText(currentDomain);
+      alert(`Copied: ${currentDomain}`);
   };
 
   return (
@@ -99,7 +134,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             initial={{ scale: 0.9, y: 20, opacity: 0 }} 
             animate={{ scale: 1, y: 0, opacity: 1 }} 
             exit={{ scale: 0.9, y: 20, opacity: 0 }}
-            className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto"
           >
             <div className="absolute top-4 right-4">
                 <button onClick={onClose} className="p-1 rounded-full hover:bg-gray-100 text-gray-500">
@@ -119,7 +154,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </p>
 
                 {error && (
-                    <div className="w-full bg-red-50 border border-red-100 text-red-600 text-sm p-3 rounded-lg mb-4">
+                    <div className="w-full bg-red-50 border border-red-100 text-red-600 text-sm p-3 rounded-lg mb-4 break-words font-medium whitespace-pre-wrap select-text">
                         {error}
                     </div>
                 )}
@@ -213,6 +248,24 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                         >
                             {isSignUp ? 'Sign In' : 'Sign Up'}
                         </button>
+                    </p>
+                </div>
+
+                {/* Domain Helper for Developer Debugging */}
+                <div className="mt-4 pt-4 border-t border-gray-100 w-full text-center bg-gray-50 p-2 rounded-lg">
+                    <p className="text-[10px] text-gray-500 uppercase tracking-wider font-bold mb-1">
+                        Setup Info (For Firebase Console)
+                    </p>
+                    <div className="flex items-center justify-center gap-2">
+                        <code className="bg-white px-2 py-1 rounded border border-gray-200 text-xs text-gray-700 select-all font-mono break-all">
+                            {currentDomain}
+                        </code>
+                        <button onClick={handleCopyDomain} className="p-1 hover:bg-gray-200 rounded text-gray-600" title="Copy Domain">
+                            <CopyIcon className="w-4 h-4" />
+                        </button>
+                    </div>
+                    <p className="text-[10px] text-gray-400 mt-1">
+                        Add this to Auth {'>'} Settings {'>'} Authorized Domains
                     </p>
                 </div>
             </div>

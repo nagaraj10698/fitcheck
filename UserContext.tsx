@@ -6,6 +6,33 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, WardrobeItem, Transaction, SavedOutfit } from './types';
 import { defaultWardrobe } from './wardrobe';
+import { 
+  auth, 
+  db, 
+  googleProvider 
+} from './lib/firebase';
+import { 
+  signInWithPopup, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  updateProfile
+} from "firebase/auth";
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  updateDoc, 
+  collection, 
+  query, 
+  where, 
+  getDocs, 
+  addDoc, 
+  onSnapshot,
+  increment,
+  deleteDoc
+} from "firebase/firestore";
 
 interface UserContextType {
   user: User | null;
@@ -35,411 +62,382 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 
 export const UserProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [allUsers, setAllUsers] = useState<User[]>([]); // Only populated for admins
   const [globalWardrobe, setGlobalWardrobe] = useState<WardrobeItem[]>(defaultWardrobe);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
 
-  // Initialization
+  // 1. Unified Auth & Data Listener
+  // This pattern handles offline support (via snapshot) and race conditions (via listener)
   useEffect(() => {
-    // Load Global Wardrobe
-    const storedWardrobe = localStorage.getItem('saas_global_wardrobe');
-    if (storedWardrobe) {
-      setGlobalWardrobe(JSON.parse(storedWardrobe));
+    if (!auth || !db) {
+        console.warn("Firebase Auth or DB not initialized. Skipping auth listener.");
+        return;
     }
 
-    // Load Users DB
-    const storedUsersDB = localStorage.getItem('saas_users_db');
-    const usersDB: User[] = storedUsersDB ? JSON.parse(storedUsersDB) : [];
-    setAllUsers(usersDB);
+    let unsubscribeUserDoc: (() => void) | null = null;
 
-    // Load Transactions DB
-    const storedTransactions = localStorage.getItem('saas_transactions_db');
-    if (storedTransactions) {
-        setTransactions(JSON.parse(storedTransactions));
-    }
-
-    // Restore current session
-    const storedUserEmail = localStorage.getItem('saas_current_user_email');
-    if (storedUserEmail) {
-      let foundUser = usersDB.find(u => u.email === storedUserEmail);
-      if (foundUser) {
-        // Backfill referral code if missing for legacy users
-        if (!foundUser.referralCode) {
-             foundUser = {
-                 ...foundUser,
-                 referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-                 redeemedReferral: false
-             };
-        }
-        // Backfill savedOutfits
-        if (!foundUser.savedOutfits) {
-            foundUser = {
-                ...foundUser,
-                savedOutfits: []
-            };
-        }
-        // Update in DB if we modified it
-        if (JSON.stringify(foundUser) !== JSON.stringify(usersDB.find(u => u.email === storedUserEmail))) {
-             const updatedDB = usersDB.map(u => u.id === foundUser!.id ? foundUser! : u);
-             setAllUsers(updatedDB);
-             localStorage.setItem('saas_users_db', JSON.stringify(updatedDB));
-        }
-
-        setUser(foundUser);
-      } else {
-        logout();
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      // Cleanup previous user listener if exists
+      if (unsubscribeUserDoc) {
+        unsubscribeUserDoc();
+        unsubscribeUserDoc = null;
       }
-    }
+
+      if (firebaseUser) {
+        const userRef = doc(db!, "users", firebaseUser.uid);
+        
+        // Use onSnapshot instead of getDoc for resilience against offline states and race conditions
+        unsubscribeUserDoc = onSnapshot(userRef, 
+          async (docSnap) => {
+            if (docSnap.exists()) {
+              const userData = docSnap.data() as User;
+              setUser(userData);
+            } else {
+              // Document doesn't exist yet.
+              // If account is brand new (<10s old), wait for signup() to create it.
+              // Otherwise, create a fallback profile (self-healing).
+              const creationTime = firebaseUser.metadata.creationTime ? new Date(firebaseUser.metadata.creationTime).getTime() : 0;
+              const isRecent = (Date.now() - creationTime) < 10000;
+
+              if (!isRecent) {
+                  console.log("Recovering missing user profile...");
+                  const newUser: User = {
+                    id: firebaseUser.uid,
+                    name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+                    email: firebaseUser.email!,
+                    role: firebaseUser.email === 'admin@fitcheck.com' ? 'admin' : 'user',
+                    gems: 50,
+                    referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+                    redeemedReferral: false,
+                    avatarUrl: firebaseUser.photoURL || null, // Explicitly null
+                    savedOutfits: []
+                  };
+                  // This write might be queued if offline, but onSnapshot will eventually pick it up
+                  await setDoc(userRef, newUser).catch(e => console.error("Self-heal failed:", e));
+              } else {
+                  console.log("New user detected, waiting for profile creation...");
+              }
+            }
+          }, 
+          (error) => {
+            // Gracefully handle permission denied or offline errors
+            console.warn("Firestore listener warning (often offline or permission):", error.message);
+          }
+        );
+
+      } else {
+        // User logged out
+        setUser(null);
+        setAllUsers([]);
+        setTransactions([]);
+      }
+    });
+
+    return () => {
+        unsubscribeAuth();
+        if (unsubscribeUserDoc) unsubscribeUserDoc();
+    };
   }, []);
 
-  const saveUsersDB = (users: User[]) => {
-    setAllUsers(users);
-    localStorage.setItem('saas_users_db', JSON.stringify(users));
-  };
 
-  const logTransaction = (
-    targetUser: User, 
+  // 2. Admin: Fetch All Users and Transactions
+  useEffect(() => {
+    if (user?.role !== 'admin' || !db) return;
+
+    const unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
+      const users = snapshot.docs.map(doc => doc.data() as User);
+      setAllUsers(users);
+    }, (err) => console.error("Admin users sync error", err));
+
+    const unsubscribeTx = onSnapshot(collection(db, "transactions"), (snapshot) => {
+        const txs = snapshot.docs.map(doc => doc.data() as Transaction);
+        // Sort by timestamp desc
+        txs.sort((a, b) => b.timestamp - a.timestamp);
+        setTransactions(txs);
+    }, (err) => console.error("Admin tx sync error", err));
+
+    return () => {
+        unsubscribeUsers();
+        unsubscribeTx();
+    };
+  }, [user?.role]);
+
+  // 3. Load Global Wardrobe (Real-time)
+  useEffect(() => {
+      if (!db) return;
+      const unsubscribe = onSnapshot(collection(db, "wardrobe"), (snapshot) => {
+          if (!snapshot.empty) {
+              const items = snapshot.docs.map(doc => doc.data() as WardrobeItem);
+              setGlobalWardrobe([...defaultWardrobe, ...items]);
+          }
+      }, (err) => console.warn("Wardrobe sync error (offline?)", err.message));
+      return () => unsubscribe();
+  }, []);
+
+
+  const logTransaction = async (
+    targetUserId: string, 
+    targetUserEmail: string,
     type: 'credit' | 'debit', 
     amount: number, 
     description: string
   ) => {
-    const newTx: Transaction = {
-        id: `tx-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        userId: targetUser.id,
-        userEmail: targetUser.email,
-        type,
-        amount,
-        description,
-        timestamp: Date.now()
-    };
-    
-    setTransactions(prev => {
-        const updated = [newTx, ...prev];
-        localStorage.setItem('saas_transactions_db', JSON.stringify(updated));
-        return updated;
-    });
+    if (!db) return;
+    try {
+        const newTx: Transaction = {
+            id: `tx-${Date.now()}`,
+            userId: targetUserId,
+            userEmail: targetUserEmail,
+            type,
+            amount,
+            description,
+            timestamp: Date.now()
+        };
+        await addDoc(collection(db, "transactions"), newTx);
+    } catch (e) {
+        console.error("Failed to log transaction", e);
+    }
   };
 
   const login = async (email: string, password?: string, options?: { name?: string, avatarUrl?: string, isGoogle?: boolean }) => {
-    const usersDB = [...allUsers];
-    let existingUser = usersDB.find(u => u.email.toLowerCase() === email.toLowerCase());
+    if (!auth || !db) throw new Error("Firebase not configured");
+    
+    if (options?.isGoogle && googleProvider) {
+        const result = await signInWithPopup(auth, googleProvider);
+        const firebaseUser = result.user;
+        
+        // Check if doc exists immediately to provide instant feedback if needed, 
+        // though the listener will handle it eventually.
+        const userRef = doc(db, "users", firebaseUser.uid);
+        const userSnap = await getDoc(userRef);
 
-    // Google Sign In Flow (Auto-create if missing, no password check)
-    if (options?.isGoogle) {
-        if (!existingUser) {
-            const role = email.toLowerCase() === 'admin@fitcheck.com' ? 'admin' : 'user';
-            existingUser = { 
-                id: `user-${Date.now()}`, 
-                name: options.name || email.split('@')[0], 
-                email, 
-                role, 
-                gems: 50, // Starter gems
+        if (!userSnap.exists()) {
+            // First time Google Sign in
+            const newUser: User = {
+                id: firebaseUser.uid,
+                name: firebaseUser.displayName || options?.name || 'User',
+                email: firebaseUser.email!,
+                role: firebaseUser.email === 'admin@fitcheck.com' ? 'admin' : 'user',
+                gems: 50,
                 referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
                 redeemedReferral: false,
-                avatarUrl: options.avatarUrl,
+                avatarUrl: firebaseUser.photoURL || options?.avatarUrl || null, // Explicitly null
                 savedOutfits: []
             };
-            usersDB.push(existingUser);
-            saveUsersDB(usersDB);
-            logTransaction(existingUser, 'credit', 50, 'Welcome Bonus');
-        } else {
-             // Update Google Profile info
-             if (options.avatarUrl && !existingUser.avatarUrl) {
-                existingUser = { ...existingUser, avatarUrl: options.avatarUrl };
-                if (options.name) existingUser.name = options.name;
-                const updatedDB = usersDB.map(u => u.id === existingUser!.id ? existingUser! : u);
-                saveUsersDB(updatedDB);
-            }
+            await setDoc(userRef, newUser);
+            await logTransaction(newUser.id, newUser.email, 'credit', 50, 'Welcome Bonus');
         }
     } else {
-        // Email/Password Flow
-        if (!existingUser) {
-            throw new Error('Account not found. Please sign up.');
-        }
-        // Prevent logging in with email/password if account was created via Google (no password set)
-        if (!existingUser.password) {
-             throw new Error('This account uses Google Sign In. Please sign in with Google.');
-        }
-        if (existingUser.password !== password) {
-            throw new Error('Invalid password.');
-        }
-    }
-
-    // Legacy backfill if needed
-    let modified = false;
-    if (existingUser && !existingUser.referralCode) {
-        existingUser = {
-            ...existingUser,
-            referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-            redeemedReferral: false
-        };
-        modified = true;
-    }
-    if (existingUser && !existingUser.savedOutfits) {
-        existingUser = { ...existingUser, savedOutfits: [] };
-        modified = true;
-    }
-
-    if (modified) {
-        const updatedDB = usersDB.map(u => u.id === existingUser!.id ? existingUser! : u);
-        saveUsersDB(updatedDB);
-    }
-
-    if (existingUser) {
-        setUser(existingUser);
-        localStorage.setItem('saas_current_user_email', existingUser.email);
+        if (!password) throw new Error("Password required");
+        await signInWithEmailAndPassword(auth, email, password);
     }
   };
 
   const signup = async (email: string, password: string, name: string, referralCode?: string) => {
-      const usersDB = [...allUsers];
-      if (usersDB.some(u => u.email.toLowerCase() === email.toLowerCase())) {
-          throw new Error('User with this email already exists.');
-      }
+    if (!auth || !db) throw new Error("Firebase not configured");
 
-      // Handle Referral
-      let referrer: User | undefined;
-      let startGems = 50; // Standard Welcome Bonus
-      const REFERRER_BONUS = 25;
-      const NEW_USER_REFERRAL_BONUS = 50;
-      let redeemed = false;
+    // 1. Create Auth User
+    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+    const firebaseUser = userCredential.user;
+    
+    try {
+        await updateProfile(firebaseUser, { displayName: name });
+    } catch (e) {
+        console.warn("Failed to update display name during signup", e);
+    }
 
-      // Validate and process referral code
-      if (referralCode && referralCode.trim()) {
-          const normalizedCode = referralCode.trim().toUpperCase();
-          referrer = usersDB.find(u => u.referralCode === normalizedCode);
-          if (referrer) {
-              redeemed = true;
-              // Add the referral bonus to the start gems for the new user
-              startGems += NEW_USER_REFERRAL_BONUS;
-          }
-      }
+    // 2. Handle Referral Logic
+    let startGems = 50;
+    let redeemed = false;
+    const REFERRER_BONUS = 25;
+    const NEW_USER_REFERRAL_BONUS = 50;
 
-      const role = email.toLowerCase() === 'admin@fitcheck.com' ? 'admin' : 'user';
-      const newUser: User = {
-          id: `user-${Date.now()}`,
-          name: name || email.split('@')[0],
-          email,
-          password, // Store password
-          role,
-          gems: startGems,
-          referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-          redeemedReferral: redeemed,
-          savedOutfits: []
-      };
+    try {
+        if (referralCode && referralCode.trim()) {
+            const normalizedCode = referralCode.trim().toUpperCase();
+            const q = query(collection(db, "users"), where("referralCode", "==", normalizedCode));
+            const querySnapshot = await getDocs(q);
 
-      usersDB.push(newUser);
+            if (!querySnapshot.empty) {
+                redeemed = true;
+                startGems += NEW_USER_REFERRAL_BONUS;
+                
+                const referrerDoc = querySnapshot.docs[0];
+                const referrerData = referrerDoc.data() as User;
 
-      // Credit Referrer if exists
-      if (referrer) {
-          const updatedReferrer = { ...referrer, gems: referrer.gems + REFERRER_BONUS };
-          // Update referrer in DB array
-          const refIndex = usersDB.findIndex(u => u.id === referrer!.id);
-          if (refIndex !== -1) {
-              usersDB[refIndex] = updatedReferrer;
-          }
-          // Defer logging transaction until after save to keep it clean
-          setTimeout(() => {
-              logTransaction(updatedReferrer, 'credit', REFERRER_BONUS, `Referral Bonus (Invited ${newUser.name})`);
-          }, 0);
-      }
+                // Credit Referrer
+                const referrerRef = doc(db, "users", referrerData.id);
+                await updateDoc(referrerRef, {
+                    gems: increment(REFERRER_BONUS)
+                });
+                await logTransaction(referrerData.id, referrerData.email, 'credit', REFERRER_BONUS, `Referral Bonus (Invited ${name})`);
+            }
+        }
+    } catch (e) {
+        console.error("Referral check failed during signup", e);
+    }
 
-      saveUsersDB(usersDB);
-      
-      // Log transactions for new user
-      logTransaction(newUser, 'credit', 50, 'Welcome Bonus');
-      if (redeemed) {
-         logTransaction(newUser, 'credit', NEW_USER_REFERRAL_BONUS, 'Referral Bonus (Redeemed Code)');
-      }
-      
-      setUser(newUser);
-      localStorage.setItem('saas_current_user_email', newUser.email);
+    // 3. Create User Document
+    const newUser: User = {
+        id: firebaseUser.uid,
+        name: name,
+        email,
+        role: email === 'admin@fitcheck.com' ? 'admin' : 'user',
+        gems: startGems,
+        referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+        redeemedReferral: redeemed,
+        savedOutfits: [],
+        avatarUrl: null
+    };
+
+    await setDoc(doc(db, "users", firebaseUser.uid), newUser);
+    
+    // 4. Log Transaction
+    await logTransaction(newUser.id, newUser.email, 'credit', 50, 'Welcome Bonus');
+    if (redeemed) {
+        await logTransaction(newUser.id, newUser.email, 'credit', NEW_USER_REFERRAL_BONUS, 'Referral Bonus (Redeemed Code)');
+    }
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('saas_current_user_email');
+  const logout = async () => {
+    if (auth) await signOut(auth);
+    // State cleanup handled by onAuthStateChanged listener
   };
 
   const deductGems = (amount: number, description: string = 'Service Usage'): boolean => {
-    if (!user) return false;
+    if (!user || !db) return false;
     if (user.gems >= amount) {
-      const updatedUser = { ...user, gems: user.gems - amount };
-      setUser(updatedUser);
+      // Optimistic UI update is handled by onSnapshot, but we return true immediately to allow app flow
+      const userRef = doc(db, "users", user.id);
+      updateDoc(userRef, {
+          gems: increment(-amount)
+      }).catch(err => console.error("Failed to deduct gems", err));
       
-      // Update in DB
-      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
-      saveUsersDB(updatedDB);
-      
-      // Log
-      logTransaction(user, 'debit', amount, description);
+      logTransaction(user.id, user.email, 'debit', amount, description);
       return true;
     }
     return false;
   };
 
-  const purchaseGems = (amount: number) => {
-    if (!user) return;
-    const updatedUser = { ...user, gems: user.gems + amount };
-    setUser(updatedUser);
-    
-    const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
-    saveUsersDB(updatedDB);
-
-    // Log
-    logTransaction(user, 'credit', amount, 'Wallet Top-up');
+  const purchaseGems = async (amount: number) => {
+    if (!user || !db) return;
+    const userRef = doc(db, "users", user.id);
+    await updateDoc(userRef, {
+        gems: increment(amount)
+    });
+    await logTransaction(user.id, user.email, 'credit', amount, 'Wallet Top-up');
   };
 
-  // --- Referral Functionality ---
+  // --- Referral ---
   const redeemReferral = (code: string): { success: boolean; message: string } => {
-    if (!user) return { success: false, message: 'Please sign in to redeem codes.' };
-    if (user.redeemedReferral) return { success: false, message: 'You have already redeemed a referral code.' };
-    
-    const normalizedCode = code.trim().toUpperCase();
-    if (user.referralCode === normalizedCode) return { success: false, message: 'You cannot use your own referral code.' };
+      if (!user || !db) return { success: false, message: 'Service unavailable.' };
+      if (user.redeemedReferral) return { success: false, message: 'Already redeemed.' };
+      if (user.referralCode === code) return { success: false, message: 'Cannot use own code.' };
 
-    const referrer = allUsers.find(u => u.referralCode === normalizedCode);
-    if (!referrer) return { success: false, message: 'Invalid referral code.' };
+      (async () => {
+        if (!db) return;
+        try {
+            const q = query(collection(db, "users"), where("referralCode", "==", code));
+            const querySnapshot = await getDocs(q);
+            
+            if (querySnapshot.empty) {
+                console.error("Invalid code"); 
+                return; 
+            }
 
-    const REFERRER_BONUS = 25;
-    const USER_BONUS = 50; 
-    
-    // Update both users in DB
-    const updatedUsers = allUsers.map(u => {
-        if (u.id === referrer.id) {
-            return { ...u, gems: u.gems + REFERRER_BONUS };
+            const referrerDoc = querySnapshot.docs[0];
+            const referrer = referrerDoc.data() as User;
+            const userRef = doc(db, "users", user.id);
+            const referrerRef = doc(db, "users", referrer.id);
+
+            // Batch or separate updates
+            await updateDoc(userRef, {
+                gems: increment(50),
+                redeemedReferral: true
+            });
+            await updateDoc(referrerRef, {
+                gems: increment(25)
+            });
+
+            logTransaction(referrer.id, referrer.email, 'credit', 25, `Referral Bonus (Invited ${user.name})`);
+            logTransaction(user.id, user.email, 'credit', 50, `Referral Bonus (Used code ${code})`);
+        } catch(e) {
+            console.error("Redeem referral error", e);
         }
-        if (u.id === user.id) {
-            return { ...u, gems: u.gems + USER_BONUS, redeemedReferral: true };
-        }
-        return u;
+      })();
+
+      return { success: true, message: 'Code applied! Updating balance...' };
+  };
+
+  // --- Saved Outfits ---
+  const saveOutfit = async (outfit: SavedOutfit) => {
+    if (!user || !db) return;
+    const userRef = doc(db, "users", user.id);
+    await updateDoc(userRef, {
+        savedOutfits: [outfit, ...(user.savedOutfits || [])]
     });
-
-    setAllUsers(updatedUsers);
-    saveUsersDB(updatedUsers);
-
-    // Update current user state
-    const updatedCurrentUser = updatedUsers.find(u => u.id === user.id);
-    if (updatedCurrentUser) setUser(updatedCurrentUser);
-
-    // Log transactions
-    logTransaction(referrer, 'credit', REFERRER_BONUS, `Referral Bonus (Invited ${user.name})`);
-    logTransaction(updatedCurrentUser!, 'credit', USER_BONUS, `Referral Bonus (Used code ${normalizedCode})`);
-
-    return { success: true, message: `Success! You earned ${USER_BONUS} Gems and your friend got ${REFERRER_BONUS} Gems.` };
   };
 
-  // --- Saved Outfit Functionality ---
-  const saveOutfit = (outfit: SavedOutfit) => {
-      if (!user) return;
-      const saved = user.savedOutfits || [];
-      const updatedUser = { ...user, savedOutfits: [outfit, ...saved] };
-      
-      setUser(updatedUser);
-      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
-      saveUsersDB(updatedDB);
+  const deleteSavedOutfit = async (outfitId: string) => {
+    if (!user || !user.savedOutfits || !db) return;
+    const updatedOutfits = user.savedOutfits.filter(o => o.id !== outfitId);
+    const userRef = doc(db, "users", user.id);
+    await updateDoc(userRef, { savedOutfits: updatedOutfits });
   };
 
-  const deleteSavedOutfit = (outfitId: string) => {
-      if (!user || !user.savedOutfits) return;
-      const updatedOutfits = user.savedOutfits.filter(o => o.id !== outfitId);
-      const updatedUser = { ...user, savedOutfits: updatedOutfits };
-
-      setUser(updatedUser);
-      const updatedDB = allUsers.map(u => u.id === user.id ? updatedUser : u);
-      saveUsersDB(updatedDB);
+  // --- Admin ---
+  const createUser = async (userData: Omit<User, 'id'>) => {
+     if (!db) throw new Error("DB unavailable");
+     const fakeId = `user-created-${Date.now()}`;
+     const newUser: User = {
+         ...userData,
+         id: fakeId,
+         referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
+         redeemedReferral: false,
+         savedOutfits: [],
+         avatarUrl: null
+     };
+     await setDoc(doc(db, "users", fakeId), newUser);
+     await logTransaction(fakeId, userData.email, 'credit', userData.gems, 'Account Created by Admin');
   };
 
-  // --- Admin Functions ---
-
-  const createUser = (userData: Omit<User, 'id'>) => {
-    const usersDB = [...allUsers];
-    if (usersDB.some(u => u.email === userData.email)) {
-        throw new Error('User with this email already exists');
-    }
-    const newUser: User = {
-        ...userData,
-        id: `user-${Date.now()}`,
-        referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-        redeemedReferral: false,
-        savedOutfits: []
-    };
-    usersDB.push(newUser);
-    saveUsersDB(usersDB);
-    logTransaction(newUser, 'credit', newUser.gems, 'Account Created by Admin');
+  const updateUser = async (userId: string, updates: Partial<User>) => {
+      if (!db) return;
+      await updateDoc(doc(db, "users", userId), updates);
   };
 
-  const updateUser = (userId: string, updates: Partial<User>) => {
-    const updatedDB = allUsers.map(u => {
-        if (u.id === userId) {
-            const updated = { ...u, ...updates };
-            if (user && user.id === userId) setUser(updated);
-            return updated;
-        }
-        return u;
-    });
-    saveUsersDB(updatedDB);
+  const deleteUser = async (userId: string) => {
+      if (!db) return;
+      await deleteDoc(doc(db, "users", userId));
   };
 
-  const deleteUser = (userId: string) => {
-    const updatedDB = allUsers.filter(u => u.id !== userId);
-    saveUsersDB(updatedDB);
-    if (user && user.id === userId) logout();
+  const updateUserGems = async (userId: string, newAmount: number) => {
+      if (!db) return;
+      await updateDoc(doc(db, "users", userId), { gems: newAmount });
   };
 
-  const updateUserGems = (userId: string, newAmount: number) => {
-    const targetUser = allUsers.find(u => u.id === userId);
-    if (!targetUser) return;
-
-    const diff = newAmount - targetUser.gems;
-    if (diff === 0) return;
-
-    const updatedDB = allUsers.map(u => {
-        if (u.id === userId) {
-            const updated = { ...u, gems: newAmount };
-            if (user && user.id === userId) setUser(updated);
-            return updated;
-        }
-        return u;
-    });
-    saveUsersDB(updatedDB);
-
-    // Log
-    const type = diff > 0 ? 'credit' : 'debit';
-    logTransaction(targetUser, type, Math.abs(diff), 'Admin Adjustment (Set Balance)');
+  const adminAdjustGems = async (userId: string, adjustment: number, description: string) => {
+      if (!db) return;
+      await updateDoc(doc(db, "users", userId), { gems: increment(adjustment) });
+      // Fetch email for log
+      const snap = await getDoc(doc(db, "users", userId));
+      if(snap.exists()) {
+          const email = snap.data().email;
+          const type = adjustment >= 0 ? 'credit' : 'debit';
+          await logTransaction(userId, email, type, Math.abs(adjustment), description);
+      }
   };
 
-  const adminAdjustGems = (userId: string, adjustment: number, description: string) => {
-    const targetUser = allUsers.find(u => u.id === userId);
-    if (!targetUser) return;
-    
-    // Prevent negative balance
-    const newBalance = Math.max(0, targetUser.gems + adjustment);
-    
-    const updatedDB = allUsers.map(u => {
-        if (u.id === userId) {
-            const updated = { ...u, gems: newBalance };
-            if (user && user.id === userId) setUser(updated);
-            return updated;
-        }
-        return u;
-    });
-    saveUsersDB(updatedDB);
-
-    const type = adjustment >= 0 ? 'credit' : 'debit';
-    logTransaction(targetUser, type, Math.abs(adjustment), description || 'Admin Adjustment');
+  const addGlobalGarment = async (item: WardrobeItem) => {
+      if (!db) return;
+      await addDoc(collection(db, "wardrobe"), item);
   };
 
-  const addGlobalGarment = (item: WardrobeItem) => {
-    const newWardrobe = [...globalWardrobe, item];
-    setGlobalWardrobe(newWardrobe);
-    localStorage.setItem('saas_global_wardrobe', JSON.stringify(newWardrobe));
-  };
-
-  const removeGlobalGarment = (itemId: string) => {
-    const newWardrobe = globalWardrobe.filter(item => item.id !== itemId);
-    setGlobalWardrobe(newWardrobe);
-    localStorage.setItem('saas_global_wardrobe', JSON.stringify(newWardrobe));
+  const removeGlobalGarment = async (itemId: string) => {
+     if (!db) return;
+     const q = query(collection(db, "wardrobe"), where("id", "==", itemId));
+     const snap = await getDocs(q);
+     snap.forEach(async (d) => await deleteDoc(d.ref));
   };
 
   return (
